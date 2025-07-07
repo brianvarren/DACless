@@ -1,0 +1,34 @@
+#######################################
+# Syntax Coloring Map for DACless
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+DAClessAudio	KEYWORD1
+DAClessConfig	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+begin	KEYWORD2
+mute	KEYWORD2
+unmute	KEYWORD2
+setSampleCallback	KEYWORD2
+setBlockCallback	KEYWORD2
+getADC	KEYWORD2
+getSampleRate	KEYWORD2
+getConfig	KEYWORD2
+getOutBufPtr	KEYWORD2
+getAdcBuffer	KEYWORD2
+interpolate	KEYWORD2
+interpolate1	KEYWORD2
+
+#######################################
+# Constants (LITERAL1)
+#######################################
+
+DACLESS_MAX_BLOCK_SIZE	LITERAL1
+DACLESS_MAX_ADC_INPUTS	LITERAL1
