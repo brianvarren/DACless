@@ -2,7 +2,10 @@
 #define DACLESS_H
 
 #include <Arduino.h>
-#include <vector>
+
+// Maximum supported values - compile-time constants
+#define DACLESS_MAX_BLOCK_SIZE 512
+#define DACLESS_MAX_ADC_INPUTS 4
 
 // Configuration struct for each DACless instance
 struct DAClessConfig {
@@ -42,7 +45,7 @@ public:
     
     // Public access to buffers for compatibility (read-only)
     const volatile uint16_t* getOutBufPtr() const { return outBufPtr_; }
-    const volatile uint16_t* getAdcBuffer() const { return adcBuf_.data(); }
+    const volatile uint16_t* getAdcBuffer() const { return adcBuf_; }
 
 private:
     DAClessConfig cfg_;  // Stores settings for this audio instance
@@ -54,11 +57,19 @@ private:
     uint dmaAdcCtrl_ = -1u;
     float sampleRate_;
     
-    // All buffers are now instance members
-    std::vector<volatile uint16_t> adcBuf_;   // Buffer for ADC readings (volatile for DMA)
-    std::vector<uint16_t> pwmBufA_;  // Double buffer for PWM output (A)
-    std::vector<uint16_t> pwmBufB_;  // Double buffer for PWM output (B)
+    // Static buffers - no dynamic allocation!
+    // Aligned for DMA access
+    // volatile uint16_t adcBuf_[DACLESS_MAX_ADC_INPUTS] __attribute__((aligned(8)));
+    // uint16_t pwmBufA_[DACLESS_MAX_BLOCK_SIZE] __attribute__((aligned(8)));
+    // uint16_t pwmBufB_[DACLESS_MAX_BLOCK_SIZE] __attribute__((aligned(8)));
     
+    alignas(DACLESS_MAX_BLOCK_SIZE * sizeof(uint16_t))
+    uint16_t pwmBufA_[DACLESS_MAX_BLOCK_SIZE];
+    alignas(DACLESS_MAX_BLOCK_SIZE * sizeof(uint16_t))
+    uint16_t pwmBufB_[DACLESS_MAX_BLOCK_SIZE];
+    alignas(DACLESS_MAX_ADC_INPUTS * sizeof(uint16_t))
+    volatile uint16_t adcBuf_[DACLESS_MAX_ADC_INPUTS];
+
     volatile uint16_t* outBufPtr_ = nullptr; // Pointer to current audio output buffer
     volatile bool      bufReady_  = false;   // Set true when buffer is ready to fill
     
@@ -76,8 +87,10 @@ private:
     // Helper to calculate DMA ring buffer size bits
     static uint calculateRingBits(uint bufferSizeBytes);
     
-    // Static registry for IRQ routing (maps DMA channel to instance)
-    static std::vector<DAClessAudio*> instances_;
+    // Static registry for IRQ routing (fixed size array to avoid dynamic allocation)
+    static constexpr uint MAX_INSTANCES = 4;
+    static DAClessAudio* instances_[MAX_INSTANCES];
+    static uint instanceCount_;
     static DAClessAudio* findInstanceByDmaChannel(uint channel);
     
     // Friend function for IRQ handler

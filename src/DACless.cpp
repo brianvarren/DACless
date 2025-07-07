@@ -1,4 +1,4 @@
-#include "DACless.h"
+#include <DACless.h>
 #include <hardware/adc.h>
 #include <hardware/pwm.h>
 #include <hardware/dma.h>
@@ -8,10 +8,11 @@
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
 #include "hardware/sync.h"
-#include <algorithm>
+#include <string.h>  // for memset
 
-// Static registry of instances
-std::vector<DAClessAudio*> DAClessAudio::instances_;
+// Static registry of instances (no dynamic allocation)
+DAClessAudio* DAClessAudio::instances_[DAClessAudio::MAX_INSTANCES] = {nullptr};
+uint DAClessAudio::instanceCount_ = 0;
 
 // Compatibility globals (point to first/active instance)
 float audio_rate = 0;
@@ -20,8 +21,9 @@ const volatile uint16_t* adc_results_buf = nullptr;
 
 // Helper to find instance by DMA channel
 DAClessAudio* DAClessAudio::findInstanceByDmaChannel(uint channel) {
-    for (auto* inst : instances_) {
-        if (inst->dmaA_ == channel || inst->dmaB_ == channel) {
+    for (uint i = 0; i < instanceCount_; i++) {
+        DAClessAudio* inst = instances_[i];
+        if (inst && (inst->dmaA_ == channel || inst->dmaB_ == channel)) {
             return inst;
         }
     }
@@ -29,10 +31,10 @@ DAClessAudio* DAClessAudio::findInstanceByDmaChannel(uint channel) {
 }
 
 // Global IRQ handler that routes to the correct instance
-extern "C" void dma_irq1_handler() {
+void dma_irq1_handler() {
     uint32_t pending = dma_hw->ints1;
     
-    // Check all possible DMA channels
+    // Check all possible DMA channels (RP2040 has 12)
     for (uint ch = 0; ch < 12; ch++) {
         if (pending & (1u << ch)) {
             dma_hw->ints1 = 1u << ch;  // Clear interrupt
@@ -50,18 +52,33 @@ extern "C" void dma_irq1_handler() {
 DAClessAudio::DAClessAudio(const DAClessConfig& cfg) : cfg_(cfg), 
     dmaA_(-1u), dmaB_(-1u), dmaAdcSamp_(-1u), dmaAdcCtrl_(-1u) {
     
+    // Validate configuration
+    if (cfg_.blockSize > DACLESS_MAX_BLOCK_SIZE) {
+        cfg_.blockSize = DACLESS_MAX_BLOCK_SIZE;
+    }
+    if (cfg_.nAdcInputs > DACLESS_MAX_ADC_INPUTS) {
+        cfg_.nAdcInputs = DACLESS_MAX_ADC_INPUTS;
+    }
+    
     // Register this instance (protect against concurrent access)
     uint32_t save = save_and_disable_interrupts();
-    instances_.push_back(this);
+    if (instanceCount_ < MAX_INSTANCES) {
+        instances_[instanceCount_++] = this;
+    }
     restore_interrupts(save);
     
     // Calculate sample rate based on configuration (matching pwm_set_wrap)
     sampleRate_ = clock_get_hz(clk_sys) / (1u << cfg_.pwmBits);
     
     // Update compatibility globals if this is the first instance
-    if (instances_.size() == 1) {
+    if (instances_[0] == this) {
         audio_rate = sampleRate_;
     }
+    
+    // Clear buffers
+    memset((void*)adcBuf_, 0, sizeof(adcBuf_));
+    memset(pwmBufA_, 0, sizeof(pwmBufA_));
+    memset(pwmBufB_, 0, sizeof(pwmBufB_));
 }
 
 // Destructor
@@ -86,22 +103,30 @@ DAClessAudio::~DAClessAudio() {
     
     // Remove from registry (protect against concurrent access)
     uint32_t save = save_and_disable_interrupts();
-    auto it = std::find(instances_.begin(), instances_.end(), this);
-    if (it != instances_.end()) {
-        instances_.erase(it);
+    for (uint i = 0; i < instanceCount_; i++) {
+        if (instances_[i] == this) {
+            // Shift remaining instances down
+            for (uint j = i; j < instanceCount_ - 1; j++) {
+                instances_[j] = instances_[j + 1];
+            }
+            instanceCount_--;
+            break;
+        }
     }
     restore_interrupts(save);
 }
 
 void DAClessAudio::begin() {
-    // Prepare all buffers based on instance config
-    adcBuf_.resize(cfg_.nAdcInputs, 0);
-    pwmBufA_.resize(cfg_.blockSize, (1u << cfg_.pwmBits) / 2);  // Initialize to midpoint
-    pwmBufB_.resize(cfg_.blockSize, (1u << cfg_.pwmBits) / 2);
+    // Initialize buffers to midpoint
+    uint16_t midpoint = (1u << cfg_.pwmBits) / 2;
+    for (uint i = 0; i < cfg_.blockSize; i++) {
+        pwmBufA_[i] = midpoint;
+        pwmBufB_[i] = midpoint;
+    }
     
     // Update compatibility globals
     if (instances_[0] == this) {
-        adc_results_buf = adcBuf_.data();
+        adc_results_buf = adcBuf_;
     }
     
     // Set up hardware
@@ -141,10 +166,10 @@ uint16_t DAClessAudio::getADC(uint8_t channel) const {
 void DAClessAudio::handleDmaIrq(uint channel) {
     // Determine which buffer just started playing and prepare the other
     if (channel == dmaA_) {
-        outBufPtr_ = pwmBufA_.data();
+        outBufPtr_ = pwmBufA_;
         bufReady_ = true;
     } else if (channel == dmaB_) {
-        outBufPtr_ = pwmBufB_.data();
+        outBufPtr_ = pwmBufB_;
         bufReady_ = true;
     }
     
@@ -163,8 +188,9 @@ void DAClessAudio::handleDmaIrq(uint channel) {
             }
         } else {
             // Default: fill with silence
+            uint16_t midpoint = (1u << cfg_.pwmBits) / 2;
             for (uint16_t i = 0; i < cfg_.blockSize; i++) {
-                const_cast<uint16_t*>(outBufPtr_)[i] = (1u << cfg_.pwmBits) / 2;
+                const_cast<uint16_t*>(outBufPtr_)[i] = midpoint;
             }
         }
         bufReady_ = false;
@@ -224,7 +250,7 @@ void DAClessAudio::configurePWM_DMA() {
     dma_channel_configure(
         dmaA_, &cfg_0_a,
         &pwm_hw->slice[slice_num].cc,
-        pwmBufA_.data(),
+        pwmBufA_,
         cfg_.blockSize,
         false
     );
@@ -242,7 +268,7 @@ void DAClessAudio::configurePWM_DMA() {
     dma_channel_configure(
         dmaB_, &cfg_0_b,
         &pwm_hw->slice[slice_num].cc,
-        pwmBufB_.data(),
+        pwmBufB_,
         cfg_.blockSize,
         false
     );
@@ -303,7 +329,7 @@ void DAClessAudio::configureADC_DMA() {
     channel_config_set_enable(&ctrl_conf, true);
     
     // Create pointer to ADC buffer for control channel
-    volatile uint16_t* adc_ptr = adcBuf_.data();
+    volatile uint16_t* adc_ptr = adcBuf_;
     
     dma_channel_configure(
         dmaAdcSamp_, &samp_conf,
