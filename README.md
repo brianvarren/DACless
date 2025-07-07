@@ -51,7 +51,7 @@ void setup() {
 void loop() {
     // Audio runs in background
 }
-
+```
 
 ### Block Callback Example
 
