@@ -1,5 +1,5 @@
 
-````markdown
+
 # DACless Audio Library for RP2040
 
 A high-performance, zero-heap, multi-instance audio library for the Raspberry Pi Pico (RP2040), generating audio via PWM output and DMA.  
@@ -184,4 +184,4 @@ Copyright (c) Brian Varren.
 
 **For questions, feedback, or to report a bug,** open an Issue or PR on [GitHub](https://github.com/brianvarren/DACless).
 
-````
+
