@@ -1,4 +1,4 @@
-#include <DACless.h>
+#include "DACless.h"
 #include <hardware/adc.h>
 #include <hardware/pwm.h>
 #include <hardware/dma.h>
@@ -328,21 +328,21 @@ void DAClessAudio::configureADC_DMA() {
     channel_config_set_dreq(&ctrl_conf, DREQ_FORCE);
     channel_config_set_enable(&ctrl_conf, true);
     
-    // Create pointer to ADC buffer for control channel
-    volatile uint16_t* adc_ptr = adcBuf_;
+    // FIXED: Store pointer in persistent member variable
+    adcBufPtr_ = adcBuf_;
     
     dma_channel_configure(
         dmaAdcSamp_, &samp_conf,
-        const_cast<uint16_t*>(adc_ptr),  // Cast away volatile for DMA setup
-        &adc_hw->fifo,
+        const_cast<uint16_t*>(adcBuf_),  // Write destination
+        &adc_hw->fifo,                    // Read source
         cfg_.nAdcInputs,
         false
     );
     
     dma_channel_configure(
         dmaAdcCtrl_, &ctrl_conf,
-        &dma_hw->ch[dmaAdcSamp_].al2_write_addr_trig,
-        &adc_ptr,
+        &dma_hw->ch[dmaAdcSamp_].al2_write_addr_trig,  // Write to sample channel's address trigger
+        &adcBufPtr_,                                     // Read from persistent pointer location
         1,
         false
     );

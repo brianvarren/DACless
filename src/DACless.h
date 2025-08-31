@@ -11,7 +11,7 @@
 struct DAClessConfig {
     uint pinPWM = 6;           // Which GPIO pin is used for PWM audio (default: GP6)
     uint16_t pwmBits = 12;     // Audio resolution in bits (default: 12 bits for 4096 steps)
-    uint16_t blockSize = 128;  // Number of samples processed in each audio block (default: 128)
+    uint16_t blockSize = 16;  // Number of samples processed in each audio block (default: 128)
     uint8_t nAdcInputs = 4;    // Number of ADC inputs to scan (default: 4)
 };
 
@@ -71,6 +71,7 @@ private:
     volatile uint16_t adcBuf_[DACLESS_MAX_ADC_INPUTS];
 
     volatile uint16_t* outBufPtr_ = nullptr; // Pointer to current audio output buffer
+    volatile uint16_t* adcBufPtr_ = nullptr; // Pointer to current ADC input buffer (DMA control channel)
     volatile bool      bufReady_  = false;   // Set true when buffer is ready to fill
     
     // For callbacks
