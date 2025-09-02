@@ -1,13 +1,15 @@
 /*
-  DACless Block Processing Example
-  Generates a sine wave with frequency controlled by ADC input
+  DACless Block Processing Example - PWM Only Version
+  Generates a sine wave with frequency that automatically sweeps
 */
 
-#include <DACless.h>
+#include "DACless.h"
 
-DAClessAudio audio;
+// Configure DACless with default settings
+DAClessConfig config;
+DAClessAudio audio(config);
 
-// Sine wave lookup table (quarter wave)
+// Sine wave lookup table (quarter wave, 12-bit resolution)
 const uint16_t sineTable[256] = {
     2048, 2098, 2148, 2198, 2248, 2298, 2348, 2398, 2447, 2497, 2546, 2595, 2644, 2693, 2741, 2790,
     2838, 2886, 2933, 2981, 3028, 3075, 3121, 3168, 3214, 3259, 3305, 3350, 3394, 3439, 3483, 3526,
@@ -28,7 +30,8 @@ const uint16_t sineTable[256] = {
 };
 
 uint32_t phase = 0;
-uint32_t phaseIncrement = 1000; // Default frequency
+uint32_t phaseIncrement = 2000; // Base frequency
+uint32_t sweepCounter = 0;
 
 // Get sine value with full wave reconstruction
 uint16_t getSineValue(uint32_t phase) {
@@ -50,16 +53,27 @@ uint16_t getSineValue(uint32_t phase) {
     return (value * 4095) / 5350;
 }
 
-void updateAudioBlock(uint16_t* buffer) {
-    // Read ADC to control frequency (ADC 0)
-    uint16_t adcValue = audio.getADC(0);
-    
-    // Map ADC value to frequency increment
-    // ADC is 12-bit (0-4095), map to reasonable frequency range
-    phaseIncrement = 1000 + (adcValue * 10);
+// Block callback function - fills entire buffer at once
+void updateAudioBlock(void* userData, uint16_t* buffer) {
+    // Create a frequency sweep effect
+    sweepCounter++;
+    if (sweepCounter > 1000) {  // Change frequency every ~1000 blocks
+        sweepCounter = 0;
+        static bool ascending = true;
+        static uint32_t freqMultiplier = 1;
+        
+        if (ascending) {
+            freqMultiplier++;
+            if (freqMultiplier > 8) ascending = false;
+        } else {
+            freqMultiplier--;
+            if (freqMultiplier < 1) ascending = true;
+        }
+        phaseIncrement = 1000 * freqMultiplier;
+    }
     
     // Fill the buffer with sine wave samples
-    for (int i = 0; i < AUDIO_BLOCK_SIZE; i++) {
+    for (int i = 0; i < config.blockSize; i++) {
         buffer[i] = getSineValue(phase);
         phase += phaseIncrement;
     }
@@ -67,6 +81,14 @@ void updateAudioBlock(uint16_t* buffer) {
 
 void setup() {
     Serial.begin(115200);
+    while (!Serial) delay(10);
+    
+    Serial.println("DACless Block Processing Example - PWM Only");
+    Serial.print("Block size: ");
+    Serial.println(config.blockSize);
+    
+    // Set the block callback function
+    audio.setBlockCallback(updateAudioBlock, nullptr);
     
     // Initialize the audio system
     audio.begin();
@@ -78,19 +100,18 @@ void setup() {
     Serial.print("DACless Audio initialized at ");
     Serial.print(audio.getSampleRate());
     Serial.println(" Hz");
-    Serial.println("Connect a potentiometer to ADC0 (GPIO26) to control frequency");
+    Serial.println("Listen to GPIO 6 for sweeping sine wave");
 }
 
 void loop() {
-    // Display current frequency
+    // Display current frequency every 2 seconds
     static unsigned long lastPrint = 0;
-    if (millis() - lastPrint > 500) {
+    if (millis() - lastPrint > 2000) {
         lastPrint = millis();
         
         float frequency = (audio.getSampleRate() * phaseIncrement) / 4294967296.0;
-        Serial.print("Frequency: ");
-        Serial.print(frequency);
-        Serial.print(" Hz, ADC0: ");
-        Serial.println(audio.getADC(0));
+        Serial.print("Current frequency: ");
+        Serial.print(frequency, 1);
+        Serial.println(" Hz");
     }
 }

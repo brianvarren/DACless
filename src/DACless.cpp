@@ -1,5 +1,4 @@
 #include "DACless.h"
-#include <hardware/adc.h>
 #include <hardware/pwm.h>
 #include <hardware/dma.h>
 #include "hardware/interp.h"
@@ -17,7 +16,6 @@ uint DAClessAudio::instanceCount_ = 0;
 // Compatibility globals (point to first/active instance)
 float audio_rate = 0;
 volatile uint16_t* out_buf_ptr = nullptr;
-const volatile uint16_t* adc_results_buf = nullptr;
 
 // Helper to find instance by DMA channel
 DAClessAudio* DAClessAudio::findInstanceByDmaChannel(uint channel) {
@@ -76,7 +74,6 @@ DAClessAudio::DAClessAudio(const DAClessConfig& cfg) : cfg_(cfg),
     }
     
     // Clear buffers
-    memset((void*)adcBuf_, 0, sizeof(adcBuf_));
     memset(pwmBufA_, 0, sizeof(pwmBufA_));
     memset(pwmBufB_, 0, sizeof(pwmBufB_));
 }
@@ -91,14 +88,6 @@ DAClessAudio::~DAClessAudio() {
     if (dmaB_ != -1u) {
         dma_channel_abort(dmaB_);
         dma_channel_unclaim(dmaB_);
-    }
-    if (dmaAdcSamp_ != -1u) {
-        dma_channel_abort(dmaAdcSamp_);
-        dma_channel_unclaim(dmaAdcSamp_);
-    }
-    if (dmaAdcCtrl_ != -1u) {
-        dma_channel_abort(dmaAdcCtrl_);
-        dma_channel_unclaim(dmaAdcCtrl_);
     }
     
     // Remove from registry (protect against concurrent access)
@@ -124,15 +113,9 @@ void DAClessAudio::begin() {
         pwmBufB_[i] = midpoint;
     }
     
-    // Update compatibility globals
-    if (instances_[0] == this) {
-        adc_results_buf = adcBuf_;
-    }
-    
     // Set up hardware
     setupInterpolators();
     configurePWM_DMA();
-    configureADC_DMA();
 }
 
 void DAClessAudio::setSampleCallback(SampleCallback cb, void* userdata) {
@@ -154,13 +137,6 @@ void DAClessAudio::mute() {
 void DAClessAudio::unmute() {
     uint slice_num = pwm_gpio_to_slice_num(cfg_.pinPWM);
     pwm_set_enabled(slice_num, true);
-}
-
-uint16_t DAClessAudio::getADC(uint8_t channel) const {
-    if (channel >= cfg_.nAdcInputs) {
-        return 0;
-    }
-    return adcBuf_[channel];
 }
 
 void DAClessAudio::handleDmaIrq(uint channel) {
@@ -284,74 +260,6 @@ void DAClessAudio::configurePWM_DMA() {
     }
 
     dma_channel_start(dmaA_);
-}
-
-void DAClessAudio::configureADC_DMA() {
-    // Only configure ADC if we have inputs
-    if (cfg_.nAdcInputs == 0) return;
-    
-    // Setup ADC on GPIO 26-29 (up to 4 channels)
-    for (uint8_t i = 0; i < cfg_.nAdcInputs && i < 4; i++) {
-        adc_gpio_init(26 + i);
-    }
-    
-    adc_init();
-    adc_set_clkdiv(1);
-    
-    // Set up round-robin mask based on number of inputs
-    uint8_t rr_mask = (1u << cfg_.nAdcInputs) - 1;
-    adc_set_round_robin(rr_mask);
-    adc_select_input(0);
-    adc_fifo_setup(true, true, cfg_.nAdcInputs, false, false);
-    adc_fifo_drain();
-
-    // Get DMA channels
-    dmaAdcSamp_ = dma_claim_unused_channel(true);
-    dmaAdcCtrl_ = dma_claim_unused_channel(true);
-    
-    // Setup Sample Channel
-    dma_channel_config samp_conf = dma_channel_get_default_config(dmaAdcSamp_);
-    channel_config_set_transfer_data_size(&samp_conf, DMA_SIZE_16);
-    channel_config_set_read_increment(&samp_conf, false);
-    channel_config_set_write_increment(&samp_conf, true);
-    channel_config_set_irq_quiet(&samp_conf, true);
-    channel_config_set_dreq(&samp_conf, DREQ_ADC);
-    channel_config_set_chain_to(&samp_conf, dmaAdcCtrl_);
-    channel_config_set_enable(&samp_conf, true);
-    
-    // Setup Control Channel (for continuous operation)
-    dma_channel_config ctrl_conf = dma_channel_get_default_config(dmaAdcCtrl_);
-    channel_config_set_transfer_data_size(&ctrl_conf, DMA_SIZE_32);
-    channel_config_set_read_increment(&ctrl_conf, false);
-    channel_config_set_write_increment(&ctrl_conf, false);
-    channel_config_set_irq_quiet(&ctrl_conf, true);
-    channel_config_set_dreq(&ctrl_conf, DREQ_FORCE);
-    channel_config_set_enable(&ctrl_conf, true);
-    
-    // FIXED: Store pointer in persistent member variable
-    adcBufPtr_ = adcBuf_;
-    
-    dma_channel_configure(
-        dmaAdcSamp_, &samp_conf,
-        const_cast<uint16_t*>(adcBuf_),  // Write destination
-        &adc_hw->fifo,                    // Read source
-        cfg_.nAdcInputs,
-        false
-    );
-    
-    dma_channel_configure(
-        dmaAdcCtrl_, &ctrl_conf,
-        &dma_hw->ch[dmaAdcSamp_].al2_write_addr_trig,  // Write to sample channel's address trigger
-        &adcBufPtr_,                                     // Read from persistent pointer location
-        1,
-        false
-    );
-    
-    // Start the sample channel first
-    dma_channel_start(dmaAdcSamp_);
-    // Then start the control channel
-    dma_channel_start(dmaAdcCtrl_);
-    adc_run(true);
 }
 
 // Global interpolation functions
